@@ -67,9 +67,15 @@ touch ./suricata-logs/fast.log
 echo "Running Suricata on $PCAP_FILE with rules from $ABS_RULES_DIR..."
 suricata -c ./suricata.yaml -r "$PCAP_FILE" -s ./suricata.rules -l ./suricata-logs/
 
-# Display triggered alerts from the fast.log
-echo "Triggered rules (from fast.log, for more detail, check the ./suricata-logs/ directory):"
-cat ./suricata-logs/fast.log
+# Parse the fast.log to count alert occurrences and output to alert-overview.log and screen
+{
+    echo "| Rule SID + Name                                                | Count |"
+    echo "|---------------------------------------------------------------|-------|"
+    grep '\[\*\*\]' ./suricata-logs/fast.log | sed 's/.*\[\*\*\] \(.*\) \[\*\*\].*/\1/' | sort | uniq -c | sort -rn | awk '{ printf "| %-61s | %-5d |\n", substr($0, index($0, $2)), $1 }'
+} > ./suricata-logs/alert-overview.log
+
+# Display the alert overview
+cat ./suricata-logs/alert-overview.log
 
 # Clean up the temporary rules file
-rm -f "$TEMP_RULES_FILE"
+rm -f ./suricata.rules
