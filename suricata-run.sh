@@ -64,9 +64,13 @@ mkdir ./suricata-logs/
 touch ./suricata-logs/fast.log
 
 # Run Suricata with the provided PCAP file, temporary configuration, and compiled rules
-echo "Running Suricata on $PCAP_FILE with rules from $ABS_RULES_DIR..."
+echo "Running Suricata on $PCAP_FILE with rules from $ABS_RULES_DIR ..."
 suricata -c ./suricata.yaml -r "$PCAP_FILE" -s ./suricata.rules -l ./suricata-logs/
 
+# Clean up the temporary rules file
+rm -f ./suricata.rules
+
+echo "Parsing rules ..."
 # Parse the fast.log to count alert occurrences and output to alert-overview.log and screen
 {
     echo "| Rule SID + Name                                                | Count |"
@@ -76,6 +80,23 @@ suricata -c ./suricata.yaml -r "$PCAP_FILE" -s ./suricata.rules -l ./suricata-lo
 
 # Display the alert overview
 cat ./suricata-logs/alert-overview.log
+echo
+echo
 
-# Clean up the temporary rules file
-rm -f ./suricata.rules
+echo "Parsing extracted files ..."
+# Remove all empty directories from the filestore directory
+find ./suricata-logs/filestore -type d -empty -delete
+
+# Analyze files in the filestore directory and create a markdown table
+{
+    echo "| Filename/SHA256sum                                           | Filetype |"
+    echo "|--------------------------------------------------------------|----------|"
+    find ./suricata-logs/filestore -mindepth 2 -maxdepth 2 -type f | while read -r file; do
+        sha256=$(sha256sum "$file" | awk '{print $1}')
+        filetype=$(file -b "$file")
+        printf "| %-60s | %-8s |\n" "$sha256" "$filetype"
+    done | sort -t '|' -k3,3
+} > ./suricata-logs/filetype-overview.log
+
+# Display the filetype overview
+cat ./suricata-logs/filetype-overview.log
