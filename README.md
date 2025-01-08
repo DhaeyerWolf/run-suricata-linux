@@ -11,4 +11,4 @@ You will need to have suricata installed. The script checks upon startup if suri
 
 # Notes
 A few important notes about the `suricata.yaml` file:
-- This file has been modified so that both `$HOME_NET` & `$EXTERNAL_NET` are set to `any`. This will trigger a lot of rules (as it basically will ignore any rule that takes advantage of this); if this is too verbose. Please set `HOME_NET: "[192.168.0.0/16,10.0.0.0/8,172.16.0.0/12]"` & `EXTERNAL_NET: "!$HOME_NET"`
+- This file has been modified so that both `$HOME_NET` & `$EXTERNAL_NET` are set to `any`. This will trigger a lot of rules, or even break some rules (as it basically will ignore any rule that takes advantage of this); if this is too verbose. Please set `HOME_NET: "[192.168.0.0/16,10.0.0.0/8,172.16.0.0/12]"` & `EXTERNAL_NET: "!$HOME_NET"`
