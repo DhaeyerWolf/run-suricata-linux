@@ -108,17 +108,20 @@ if [ ! -d "$ABS_RULES_DIR" ]; then
     exit 1
 fi
 
+# Prepare logging directory for new execution
+rm -rf ./suricata-logs/
+mkdir ./suricata-logs/
+touch ./suricata-logs/fast.log
+
+# Extract disabled rules and write them to rules.disabled
+grep -h '^#a' "$ABS_RULES_DIR"/*.rules > ./suricata-logs/rules.disabled
+
 # Create a temporary file to compile all rules
 if [ "$DISABLE_FLOW" = true ]; then
     grep -hEv '^\s*$|^\s*#' "$ABS_RULES_DIR"/*.rules | sed 's/flow:[^;]*;//g' > ./suricata.rules
 else
     grep -hEv '^\s*$|^\s*#' "$ABS_RULES_DIR"/*.rules > ./suricata.rules
 fi
-
-# Prepare logging directory for new execution
-rm -rf ./suricata-logs/
-mkdir ./suricata-logs/
-touch ./suricata-logs/fast.log
 
 # Construct verbosity option
 VERBOSE_OPTION=""
