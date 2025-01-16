@@ -162,7 +162,7 @@ find ./suricata-logs/filestore -type d -empty -delete
     echo "| Filename/SHA256sum                                           | Filetype |"
     echo "|--------------------------------------------------------------|----------|"
     find ./suricata-logs/filestore -mindepth 2 -maxdepth 2 -type f | while read -r file; do
-        sha256=$(sha256sum "$file" | awk '{print $1}')
+        sha256=$file
         filetype=$(file -b "$file")
         printf "| %-60s | %-8s |\n" "$sha256" "$filetype"
     done | sort -t '|' -k3,3
