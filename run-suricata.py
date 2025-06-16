@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
+
 """
 This script runs Suricata on a provided PCAP file using the specified Suricata rules,
 extracts files to a local directory, and then scans those files using yara-python.
 It also generates Pandas tables for Suricata alerts and YARA scan results,
-shortens long output for readability, and cleans up temporary files.
+shortens long output for readability, cleans up temporary files, and now produces an HTML
+page visualizing network traffic from fast.log. In the visualization, nodes represent assets,
+edges represent the connection traffic (with directional arrows), and when hovering over an edge,
+the associated alert(s) are displayed (with counts if multiple occur).
 
 Usage:
     ./run-suricata.py [options] <pcap_file> <rules_directory>
@@ -27,6 +31,7 @@ from pathlib import Path
 
 import pandas as pd
 import yara
+import json
 
 
 def shorten_text(text, max_length=50):
@@ -112,7 +117,8 @@ def parse_arguments():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
         description=("Run Suricata on a PCAP file with the supplied Suricata rules and perform "
-                     "YARA scanning on files extracted in ./suricata-logs/filestore/."),
+                     "YARA scanning on files extracted in ./suricata-logs/filestore/. Additionally, "
+                     "an HTML page is generated to visualize the network traffic from fast.log."),
         usage="%(prog)s [options] <pcap_file> <rules_directory>"
     )
     parser.add_argument("pcap_file", help="Path to the PCAP file.")
@@ -265,12 +271,12 @@ def create_yara_results_table(rules_file: Path, filestore: Path, log_dir: Path):
         return
 
     # Create a display version with shortened text.
-    def shorten_text(text, max_length=50):
+    def shorten_text_local(text, max_length=50):
         return text if len(text) <= max_length else text[:max_length] + "..."
-        
+
     df_display = df_full.copy()
-    df_display["filetype"] = df_display["filetype"].apply(lambda x: shorten_text(x, 40))
-    df_display["yara match"] = df_display["yara match"].apply(lambda x: shorten_text(x, 40))
+    df_display["filetype"] = df_display["filetype"].apply(lambda x: shorten_text_local(x, 40))
+    df_display["yara match"] = df_display["yara match"].apply(lambda x: shorten_text_local(x, 40))
     df_display["has_match"] = df_display["yara match"].apply(lambda x: bool(x.strip()))
     df_display.sort_values(by=["has_match", "filetype"], ascending=[False, True], inplace=True)
     df_display.drop(columns=["has_match"], inplace=True)
@@ -288,6 +294,336 @@ def create_yara_results_table(rules_file: Path, filestore: Path, log_dir: Path):
     csv_path = log_dir / "yara_results.csv"
     df_full.to_csv(csv_path, index=False)
     print(f"Full YARA results exported to CSV: {csv_path}")
+
+
+def generate_network_traffic_html(log_dir: Path):
+    """
+    Generate an HTML page that visualizes network traffic from fast.log.
+    The visualization shows nodes (assets) and edges (connections) on the left.
+    A persistent alert list is displayed on the right showing two columns: 
+       "Alert Name" and "Count" (default sorted by count descending).
+    A search box allows filtering the alert list by alert names.
+    Clicking on a flow (edge) filters the alert list to only the alerts associated
+    with that connection. Likewise, clicking on an alert row highlights in the graph
+    only the flows (edges) that involve that alert, graying out the others.
+    Clicking on Reset Filter (or deselecting) resets the graph to its default state.
+    """
+    fast_log = log_dir / "fast.log"
+    if not fast_log.exists():
+        print(f"{fast_log} does not exist. Skipping network traffic visualization.")
+        return
+
+    # Data structures for network graph and global alert aggregation.
+    nodes = {}    # key = asset IP, value = node object with id and label
+    edges = {}    # key = (src, dst), value = { "count": int, "alerts": { alert: count } }
+    global_alerts = {}  # key = alert name, value = count
+
+    # Regexes to extract alert text and network endpoints.
+    alert_pattern = re.compile(r"\[\*\*\]\s*(.*?)\s*\[\*\*\]")
+    traffic_pattern = re.compile(r"\{\s*(?P<protocol>\w+)\s*\}\s+(?P<src>[\d\.]+:\d+)\s+->\s+(?P<dst>[\d\.]+:\d+)")
+
+    with open(fast_log, "r") as f:
+        for line in f:
+            alert_matches = alert_pattern.findall(line)
+            alert_text = alert_matches[0] if alert_matches else "Unknown Alert"
+            global_alerts[alert_text] = global_alerts.get(alert_text, 0) + 1
+
+            traffic_match = traffic_pattern.search(line)
+            if traffic_match:
+                src_full = traffic_match.group("src")
+                dst_full = traffic_match.group("dst")
+                src_ip = src_full.split(":")[0]
+                dst_ip = dst_full.split(":")[0]
+
+                nodes[src_ip] = {"id": src_ip, "label": src_ip}
+                nodes[dst_ip] = {"id": dst_ip, "label": dst_ip}
+
+                edge_key = (src_ip, dst_ip)
+                if edge_key not in edges:
+                    edges[edge_key] = {"count": 0, "alerts": {}}
+                edges[edge_key]["count"] += 1
+                edges[edge_key]["alerts"][alert_text] = edges[edge_key]["alerts"].get(alert_text, 0) + 1
+
+    nodes_list = list(nodes.values())
+    edges_list = []
+    edge_id_counter = 0
+    for (src, dst), data in edges.items():
+        alerts_arr = [{"name": alert, "count": count} for alert, count in data["alerts"].items()]
+        alerts_tooltip = "<br>".join(f"{alert} ({cnt})" for alert, cnt in data["alerts"].items())
+        edge_obj = {
+            "id": f"edge_{edge_id_counter}",
+            "from": src,
+            "to": dst,
+            "arrows": "to",
+            "label": str(data["count"]),
+            "title": alerts_tooltip,
+            "alerts": alerts_arr
+        }
+        edges_list.append(edge_obj)
+        edge_id_counter += 1
+
+    global_alerts_list = sorted(
+        [{"name": name, "count": count} for name, count in global_alerts.items()],
+        key=lambda x: x["count"],
+        reverse=True
+    )
+
+    import json
+    nodes_json = json.dumps(nodes_list)
+    edges_json = json.dumps(edges_list)
+    global_alerts_json = json.dumps(global_alerts_list)
+
+    html_content = f"""
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Network Traffic &amp; Alert List Visualization</title>
+  <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+  <style type="text/css">
+    body {{
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      height: 100vh;
+    }}
+    #graphContainer {{
+      flex: 2;
+      border-right: 1px solid #ccc;
+      padding: 10px;
+      min-width: 400px;
+    }}
+    #alertContainer {{
+      flex: 1;
+      padding: 10px;
+      overflow-y: auto;
+      min-width: 300px;
+    }}
+    #network {{
+      width: 100%;
+      height: 600px;
+      border: 1px solid lightgray;
+    }}
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+    }}
+    th, td {{
+      padding: 8px;
+      text-align: left;
+      border-bottom: 1px solid #ddd;
+    }}
+    th {{
+      cursor: pointer;
+      background-color: #f2f2f2;
+    }}
+    tr:hover {{
+      background-color: #eaeaea;
+    }}
+    #resetBtn {{
+      margin-bottom: 10px;
+    }}
+    #searchBox {{
+      width: 95%;
+      padding: 6px;
+      margin-bottom: 10px;
+      border: 1px solid #ccc;
+    }}
+    #noDataMessage {{
+      color: red;
+      font-weight: bold;
+      margin-top: 20px;
+    }}
+  </style>
+</head>
+<body>
+  <div id="graphContainer">
+    <h2>Network Graph</h2>
+    <div id="network"></div>
+    <div id="noDataMessage"></div>
+  </div>
+  <div id="alertContainer">
+    <h2>Alert List</h2>
+    <input type="text" id="searchBox" placeholder="Search alerts...">
+    <button id="resetBtn">Reset Filter</button>
+    <table id="alertTable">
+      <thead>
+         <tr>
+           <th data-sort="name">Alert Name</th>
+           <th data-sort="count">Count</th>
+         </tr>
+      </thead>
+      <tbody id="alertTableBody"></tbody>
+    </table>
+  </div>
+  <script type="text/javascript">
+    // Parse JSON data logged from Python.
+    var nodes = new vis.DataSet({nodes_json});
+    var edges = new vis.DataSet({edges_json});
+    console.log("Nodes:", nodes.get());
+    console.log("Edges:", edges.get());
+    var container = document.getElementById('network');
+    var data = {{
+      nodes: nodes,
+      edges: edges
+    }};
+    var options = {{
+      interaction: {{
+        hover: true
+      }},
+      edges: {{
+        arrows: {{
+          to: {{
+            enabled: true
+          }}
+        }},
+        font: {{
+          align: 'middle'
+        }}
+      }},
+      physics: {{
+        stabilization: true
+      }}
+    }};
+    var network = new vis.Network(container, data, options);
+
+    // Global alert list.
+    var globalAlerts = {global_alerts_json};
+    var currentAlerts = globalAlerts.slice();
+    console.log("Global Alerts:", globalAlerts);
+
+    // Function to render the alert table.
+    function renderAlertTable(alerts) {{
+      alerts.sort(function(a, b) {{
+        return b.count - a.count;
+      }});
+      var tbody = document.getElementById('alertTableBody');
+      tbody.innerHTML = "";
+      alerts.forEach(function(item) {{
+        var row = document.createElement("tr");
+        row.setAttribute("data-alert-name", item.name);
+        var cellName = document.createElement("td");
+        cellName.textContent = item.name;
+        var cellCount = document.createElement("td");
+        cellCount.textContent = item.count;
+        row.appendChild(cellName);
+        row.appendChild(cellCount);
+        row.addEventListener("click", function() {{
+          filterGraphByAlert(item.name);
+          var rows = document.querySelectorAll("#alertTableBody tr");
+          rows.forEach(function(r) {{
+            r.style.backgroundColor = "";
+          }});
+          this.style.backgroundColor = "#ffedcc";
+        }});
+        tbody.appendChild(row);
+      }});
+    }}
+
+    renderAlertTable(currentAlerts);
+
+    // Function to filter table rows by search input.
+    function filterAlertsBySearch(searchTerm) {{
+      var filtered = globalAlerts.filter(function(alert) {{
+        return alert.name.toLowerCase().indexOf(searchTerm.toLowerCase()) !== -1;
+      }});
+      currentAlerts = filtered;
+      renderAlertTable(currentAlerts);
+    }}
+
+    // Add event listener to the search box.
+    document.getElementById("searchBox").addEventListener("keyup", function() {{
+      filterAlertsBySearch(this.value);
+    }});
+
+    // Function to filter graph edges based on an alert.
+    function filterGraphByAlert(alertName) {{
+      edges.forEach(function(edge) {{
+         var hasAlert = false;
+         if (edge.alerts && Array.isArray(edge.alerts)) {{
+           edge.alerts.forEach(function(a) {{
+             if (a.name === alertName) {{
+               hasAlert = true;
+             }}
+           }});
+         }}
+         if (hasAlert) {{
+            edges.update({{id: edge.id, color: {{color: "red", inherit: false}}}});
+         }} else {{
+            edges.update({{id: edge.id, color: {{color: "lightgray", inherit: false}}}});
+         }}
+      }});
+    }}
+
+    // Function to reset graph edges to default style.
+    function resetGraphEdgeStyles() {{
+      edges.forEach(function(edge) {{
+         edges.update({{id: edge.id, color: {{}}}});
+      }});
+    }}
+
+    // Networking events.
+    network.on("selectEdge", function (params) {{
+      if (params.edges.length > 0) {{
+        var edgeId = params.edges[0];
+        var edgeObj = edges.get(edgeId);
+        if (edgeObj && edgeObj.alerts) {{
+          currentAlerts = edgeObj.alerts.slice();
+          renderAlertTable(currentAlerts);
+        }}
+      }}
+    }});
+    network.on("deselectEdge", function (params) {{
+      currentAlerts = globalAlerts.slice();
+      renderAlertTable(currentAlerts);
+      resetGraphEdgeStyles();
+    }});
+
+    document.getElementById("resetBtn").addEventListener("click", function() {{
+      network.unselectAll();
+      currentAlerts = globalAlerts.slice();
+      renderAlertTable(currentAlerts);
+      resetGraphEdgeStyles();
+      var rows = document.querySelectorAll("#alertTableBody tr");
+      rows.forEach(function(r) {{
+         r.style.backgroundColor = "";
+      }});
+      document.getElementById("searchBox").value = "";
+    }});
+
+    var headers = document.querySelectorAll("th[data-sort]");
+    headers.forEach(function(header) {{
+      header.addEventListener("click", function() {{
+        var sortKey = this.getAttribute("data-sort");
+        if (this.getAttribute("data-order") === "desc") {{
+          this.setAttribute("data-order", "asc");
+          currentAlerts.sort(function(a, b) {{
+            if (sortKey === "count") return a.count - b.count;
+            return a.name.localeCompare(b.name);
+          }});
+        }} else {{
+          this.setAttribute("data-order", "desc");
+          currentAlerts.sort(function(a, b) {{
+            if (sortKey === "count") return b.count - a.count;
+            return b.name.localeCompare(a.name);
+          }});
+        }}
+        renderAlertTable(currentAlerts);
+      }});
+    }});
+
+    if (nodes.get().length === 0 || edges.get().length === 0) {{
+      document.getElementById("noDataMessage").textContent = "Warning: No network data found.";
+    }}
+  </script>
+</body>
+</html>
+"""
+    output_html = log_dir / "network_traffic.html"
+    with open(output_html, "w") as f:
+        f.write(html_content)
+    print("Network traffic visualization generated: {}".format(output_html))
 
 def main():
     # Ensure Suricata is installed.
@@ -349,6 +685,10 @@ def main():
             print(f"Removed temporary file {yara_rules_path}.")
         except Exception as e:
             print(f"Failed to remove temporary file {yara_rules_path}: {e}")
+
+    # Generate network traffic visualization HTML using fast.log
+    print("Generating network traffic visualization HTML...")
+    generate_network_traffic_html(log_dir)
 
 
 if __name__ == "__main__":
